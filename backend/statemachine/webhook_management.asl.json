@@ -1,0 +1,201 @@
+{
+  "Comment": "State machine for webhok management service",
+  "StartAt": "GetWebhooksForCompanyAndEvent",
+  "States": {
+    "GetWebhooksForCompanyAndEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Parameters": {
+        "TableName": "${DynamoDBTableName}",
+        "Key": {
+          "pk": {
+            "S.$": "States.Format('webhook_{}_{}', $.companyId, $.webhookEvent)"
+          },
+          "type": {
+            "S": "webhook"
+          }
+        }
+      },
+      "Next": "IfWebhookDataExists",
+      "ResultPath": "$.webhookData"
+    },
+    "IfWebhookDataExists": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.webhookData.Item",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.webhookData.Item.pk.S",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.webhookData.Item.signedToken.S",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.webhookData.Item.url.S",
+              "IsPresent": true
+            }
+          ],
+          "Next": "TransformWebhookData"
+        }
+      ],
+      "Default": "SkipExecution"
+    },
+    "TransformWebhookData": {
+      "Type": "Pass",
+      "Next": "Fetch Resource Data Lambda",
+      "Parameters": {
+        "webhookId.$": "$.webhookData.Item.pk.S",
+        "webhookSignToken.$": "$.webhookData.Item.signedToken.S",
+        "webhookUrl.$": "$.webhookData.Item.url.S",
+        "companyId.$": "$.companyId",
+        "resourceType.$": "$.resourceType",
+        "resourceId.$": "$.resourceId"
+      }
+    },
+    "Fetch Resource Data Lambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FetchResourceFunctionName}",
+        "Payload": {
+          "key.$": "$.resourceId",
+          "type.$": "$.resourceType"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "IfEventObjectDataExists",
+      "ResultPath": "$.taskResult",
+      "ResultSelector": {
+        "resourceData.$": "$.Payload"
+      }
+    },
+    "IfEventObjectDataExists": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.taskResult.resourceData",
+            "IsNull": true
+          },
+          "Next": "SQS SendMessage"
+        }
+      ],
+      "Default": "Fail"
+    },
+    "SQS SendMessage": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+      "Parameters": {
+        "QueueUrl": "${SQSQueueUrl}",
+        "MessageBody": {
+          "url.$": "$.webhookUrl",
+          "signingToken.$": "$.webhookSignToken",
+          "payload.$": "$.taskResult.resourceData",
+          "taskToken.$": "$$.Task.Token"
+        }
+      },
+      "HeartbeatSeconds": 3600,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "BackoffRate": 2,
+          "IntervalSeconds": 60,
+          "MaxAttempts": 2
+        }
+      ],
+      "Next": "DynamoDB PutItem",
+      "ResultPath": "$.webhookCall",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "TransformError",
+          "ResultPath": "$.webhookCall"
+        }
+      ]
+    },
+    "TransformError": {
+      "Type": "Pass",
+      "Next": "DynamoDB PutItem",
+      "ResultPath": "$.webhookCall",
+      "Parameters": {
+        "status": "failed",
+        "payload": "",
+        "output": {
+          "Error.$": "$.webhookCall.Error",
+          "Cause.$": "$.webhookCall.Cause"
+        }
+      }
+    },
+    "DynamoDB PutItem": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "${DynamoDBTableName}",
+        "Item": {
+          "pk": {
+            "S.$": "States.Format('{}_{}', $.webhookId, $$.Execution.Name)"
+          },
+          "executionId": {
+            "S.$": "$$.Execution.Id"
+          },
+          "executionName": {
+            "S.$": "$$.Execution.Name"
+          },
+          "type": {
+            "S": "webhookcall"
+          },
+          "companyId": {
+            "S.$": "$.companyId"
+          },
+          "url": {
+            "S.$": "$.webhookUrl"
+          },
+          "payload": {
+            "S.$": "States.JsonToString($.webhookCall.payload)"
+          },
+          "status": {
+            "S.$": "$.webhookCall.status"
+          },
+          "result": {
+            "S.$": "States.JsonToString($.webhookCall.output)"
+          },
+          "createdAt": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "End": true
+    },
+    "Fail": {
+      "Type": "Fail",
+      "Error": "dataNotFound",
+      "Cause": "Required resource data not exists in dynamodb"
+    },
+    "SkipExecution": {
+      "Type": "Pass",
+      "End": true,
+      "Comment": "Webhook not configured for this event"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "webhook_management",
+  "version": "1.0.0",
+  "description": "Webhook management system",
+  "main": "app.js",
+  "author": "SAM CLI",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^0.24.0",
+    "crypto-js": "^4.1.1"
+  }
+}

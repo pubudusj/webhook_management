@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  webhook management backend
+
+  SAM Template for webhook management system
+
+Parameters:
+  Stage:
+    Type: String
+    Default: 'dev'
+  eventSource:
+    Type: String
+    Default: XYZCo
+  EventBusName:
+    Type: String
+    Default: EventBusXYZCompany
+
+Resources:
+  EventBus: 
+    Type: AWS::Events::EventBus
+    Properties: 
+        Name: !Ref EventBusName
+  
+  SQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
+  ApiGatewayApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      Cors:
+        AllowMethods: "'OPTIONS,POST,GET'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
+  DynamodbTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: type
+          AttributeType: S
+        - AttributeName: companyId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: type
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsiTypeAndCompanyId
+          KeySchema:
+            - AttributeName: type
+              KeyType: HASH
+            - AttributeName: companyId
+              KeyType: RANGE
+          Projection: 
+            ProjectionType: INCLUDE
+            NonKeyAttributes: 
+              - pk
+              - createdAt
+              - payload
+              - result
+              - status
+              - url
+          ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  RegisterWebhookFunction:
+    Type: AWS::Serverless::Function
+    Description: Webhook registration function
+    Properties:
+      CodeUri: functions/register-webhook/
+      Handler: app.lambdaHandler
+      Runtime: nodejs14.x
+      Timeout: 3
+      Environment:
+        Variables:
+          DB_TABLE: !Ref DynamodbTable
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref DynamodbTable
+      Events:
+        CreateWebhookApi:
+          Type: Api
+          Properties:
+            Path: /webhooks
+            Method: post
+            RestApiId: !Ref ApiGatewayApi
+
+  CreateCandidateFunction:
+    Type: AWS::Serverless::Function
+    Description: Create canidate function
+    Properties:
+      CodeUri: functions/create-candidate/
+      Handler: app.lambdaHandler
+      Runtime: nodejs14.x
+      Timeout: 10
+      Environment:
+        Variables:
+          DB_TABLE: !Ref DynamodbTable
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref DynamodbTable
+      Events:
+        CreateCandidateApi:
+          Type: Api
+          Properties:
+            Path: /candidates
+            Method: post
+            RestApiId: !Ref ApiGatewayApi
+
+  FetchResourceFunction:
+    Type: AWS::Serverless::Function
+    Description: Fetch resource data from Dyanamodb
+    Properties:
+      CodeUri: functions/fetch-resource-data/
+      Handler: app.lambdaHandler
+      Runtime: nodejs12.x
+      Timeout: 10
+      Environment:
+        Variables:
+          DB_TABLE: !Ref DynamodbTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DynamodbTable
+
+  TriggerResourceCreatedFunction:
+    Type: AWS::Serverless::Function
+    Description: Put resource data to event bus when record added to Dyanamodb
+    Properties:
+      CodeUri: functions/trigger-resource-created/
+      Handler: app.lambdaHandler
+      Runtime: nodejs12.x
+      Timeout: 20
+      Environment:
+        Variables:
+          EVENT_BUS: !Ref EventBusName
+          EVENT_SOURCE: !Ref eventSource
+      Policies:
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref EventBusName
+      Events:
+        DynamodbTableStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt DynamodbTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 100
+  
+  CallWebhookFunction:
+    Type: AWS::Serverless::Function
+    Description: Call webhook with the resource data
+    Properties:
+      CodeUri: functions/call-webhook/
+      Handler: app.lambdaHandler
+      Runtime: nodejs12.x
+      Timeout: 60
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+      Policies:
+        - Statement:
+          - Sid: StateStatusPermission
+            Effect: Allow
+            Action:
+              - states:SendTaskSuccess
+              - states:SendTaskFailure
+            Resource: '*'
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SQSQueue.Arn
+            BatchSize: 10
+
+  FetchWebhookHistoryFunction:
+    Type: AWS::Serverless::Function
+    Description: Fetcho webhook call history by companyId
+    Properties:
+      CodeUri: functions/fetch-webhook-history/
+      Handler: app.lambdaHandler
+      Runtime: nodejs14.x
+      Timeout: 10
+      Environment:
+        Variables:
+          DB_TABLE: !Ref DynamodbTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DynamodbTable
+      Events:
+        CreateCandidateApi:
+          Type: Api
+          Properties:
+            Path: /webhook_history/{companyId}
+            Method: get
+            RestApiId: !Ref ApiGatewayApi
+
+  WebhookManagmentStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/webhook_management.asl.json
+      DefinitionSubstitutions:
+        DynamoDBTableName: !Ref DynamodbTable
+        FetchResourceFunctionName: !Ref FetchResourceFunction
+        SQSQueueUrl: !Ref SQSQueue
+      Events:
+        EventBridgeRule:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref EventBus
+            Pattern:
+              source:
+                - !Ref eventSource
+              detail-type:
+                - candidate.created
+            InputPath: $.detail
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FetchResourceFunction
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt SQSQueue.QueueName
+        - DynamoDBReadPolicy:
+            TableName: !Ref DynamodbTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref DynamodbTable
+
+Outputs:
+  DynamoDBTable:
+    Description: "Dynamodb Table Arn"
+    Value: !GetAtt DynamodbTable.Arn
+  ApiBaseUrl:
+    Description: "Base Url"
+    Value: !Sub "https://${ApiGatewayApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+  EventBus:
+    Description: "Event Bus Arn"
+    Value: !GetAtt EventBus.Arn
+  FetchResourceFunction:
+    Description: FetchResourceFunction function name
+    Value: !Ref FetchResourceFunction
+  SQSQueueUrl:
+    Description: SQS Queue URL
+    Value: !Ref SQSQueue
+  WebhookManagmentStateMachineName:
+    Description: Webhook Managment State Machine Name
+    Value: !Ref WebhookManagmentStateMachine
