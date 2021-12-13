@@ -1,98 +1,50 @@
 const AWS = require("aws-sdk");
 var docClient = new AWS.DynamoDB.DocumentClient();
-var emailValidator = require("email-validator");
+const hmacSHA256 = require("crypto-js/hmac-sha256");
 const { v4: uuidv4 } = require("uuid");
 
 exports.lambdaHandler = async (event, context) => {
-  let Body = JSON.parse(event.body);
-  let validationErrors = validateInput(Body);
+    let webhookPayload = event.taskResult.resourceData;
+    webhookPayload.id = webhookPayload.pk;
+    let url = event.webhookUrl;
+    let signingToken = event.webhookSignToken;
+    let resourceId = webhookPayload.pk;
+    let currentTime = new Date().toISOString();
 
-  if (validationErrors !== null) {
-    return validationErrors;
-  }
+    delete webhookPayload.pk;
+    delete webhookPayload.companyId;
 
-  let pk =
-    "webhook_call_" + Body.companyId + "_" + Body.eventType + "_" + uuidv4();
+    let postData = {
+      resource: webhookPayload,
+      resourceId: resourceId,
+      resourceType: webhookPayload.type,
+      triggeredAt: currentTime,
+      token: hmacSHA256(resourceId + currentTime, signingToken).toString(),
+    };
 
-  var params = {
-    Item: {
-      pk: pk,
-      type: "webhook_call",
-      companyId: Body.companyId,
-      executionId: Body.executionId,
-      url: Body.url,
-      payload: Body.payload,
-      status: Body.status,
-      createdAt: new Date().toISOString(),
-    },
-    ReturnConsumedCapacity: "TOTAL",
-    TableName: process.env.DB_TABLE,
-  };
+    let pk = event.webhookId + '_' + webhookPayload.id + '_' + uuidv4();
+    var params = {
+      Item: {
+        pk: pk,
+        type: "webhookcall",
+        url: event.webhookUrl,
+        companyId: event.companyId,
+        payload: postData,
+        status: 'pending',
+        createdAt: currentTime,
+      },
+      ReturnConsumedCapacity: "TOTAL",
+      TableName: process.env.DB_TABLE,
+      ConditionExpression: "pk <> :pk",
+      ExpressionAttributeValues: {
+        ":pk": pk,
+      },
+    };
 
-  try {
     await docClient.put(params).promise();
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        message: "Candidate created",
-        data: {
-          id: pk,
-        },
-      }),
-    };
-  } catch (error) {
-    console.error("Error", error.stack);
 
     return {
-      statusCode: 500,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        message: "Candidate creation failed",
-        error: error.stack,
-      }),
-    };
-  }
+      'id': pk,
+      'payload': postData
+    }
 };
-
-function validateInput(body) {
-  let errors = [];
-
-  if (!emailValidator.validate(body.email)) {
-    errors.push("Required field email not found or invalid");
-  }
-
-  if (isNaN(body.companyId)) {
-    errors.push("Required field companyId not found or invalid");
-  }
-
-  if (!body.firstName) {
-    errors.push("Required field first name not found");
-  }
-
-  if (!body.lastName) {
-    errors.push("Required field last name not found");
-  }
-
-  if (errors.length > 0) {
-    return {
-      statusCode: 422,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        message: "Validation errors",
-        errors: errors,
-      }),
-    };
-  }
-
-  return null;
-}

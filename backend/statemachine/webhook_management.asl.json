@@ -94,10 +94,24 @@
             "Variable": "$.taskResult.resourceData",
             "IsNull": true
           },
-          "Next": "SQS SendMessage"
+          "Next": "createWebhookCall"
         }
       ],
       "Default": "Fail"
+    },
+    "createWebhookCall": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload.$": "$",
+        "FunctionName": "${CreateWebhookCallFunctionName}"
+      },
+      "Next": "SQS SendMessage",
+      "ResultPath": "$.webhookCallData",
+      "ResultSelector": {
+        "id.$": "$.Payload.id",
+        "payload.$": "$.Payload.payload"
+      }
     },
     "SQS SendMessage": {
       "Type": "Task",
@@ -106,8 +120,9 @@
         "QueueUrl": "${SQSQueueUrl}",
         "MessageBody": {
           "url.$": "$.webhookUrl",
+          "webhookCallId.$": "$.webhookCallData.id",
           "signingToken.$": "$.webhookSignToken",
-          "payload.$": "$.taskResult.resourceData",
+          "payload.$": "$.webhookCallData.payload",
           "taskToken.$": "$$.Task.Token"
         }
       },
@@ -122,67 +137,56 @@
           "MaxAttempts": 2
         }
       ],
-      "Next": "DynamoDB PutItem",
-      "ResultPath": "$.webhookCall",
+      "Next": "DynamoDB Update WebhookCall",
+      "ResultPath": "$.webhookCallResult",
       "Catch": [
         {
           "ErrorEquals": [
             "States.ALL"
           ],
           "Next": "TransformError",
-          "ResultPath": "$.webhookCall"
+          "ResultPath": "$.webhookCallResult"
         }
       ]
     },
     "TransformError": {
       "Type": "Pass",
-      "Next": "DynamoDB PutItem",
-      "ResultPath": "$.webhookCall",
+      "Next": "DynamoDB Update WebhookCall",
+      "ResultPath": "$.webhookCallResult",
       "Parameters": {
         "status": "failed",
         "payload": "",
         "output": {
-          "Error.$": "$.webhookCall.Error",
-          "Cause.$": "$.webhookCall.Cause"
+          "Error.$": "$.webhookCallResult.Error",
+          "Cause.$": "$.webhookCallResult.Cause"
         }
       }
     },
-    "DynamoDB PutItem": {
+    "DynamoDB Update WebhookCall": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
         "TableName": "${DynamoDBTableName}",
-        "Item": {
+        "Key": {
           "pk": {
-            "S.$": "States.Format('{}_{}', $.webhookId, $$.Execution.Name)"
-          },
-          "executionId": {
-            "S.$": "$$.Execution.Id"
-          },
-          "executionName": {
-            "S.$": "$$.Execution.Name"
+            "S.$": "$.webhookCallData.id"
           },
           "type": {
             "S": "webhookcall"
-          },
-          "companyId": {
-            "S.$": "$.companyId"
-          },
-          "url": {
-            "S.$": "$.webhookUrl"
-          },
-          "payload": {
-            "S.$": "States.JsonToString($.webhookCall.payload)"
-          },
-          "status": {
-            "S.$": "$.webhookCall.status"
-          },
-          "result": {
-            "S.$": "States.JsonToString($.webhookCall.output)"
-          },
-          "createdAt": {
-            "S.$": "$$.State.EnteredTime"
           }
+        },
+        "UpdateExpression": "SET #status = :status, #output = :output",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S.$": "$.webhookCallResult.status"
+          },
+          ":output": {
+            "S.$": "States.JsonToString($.webhookCallResult.output)"
+          }
+        },
+        "ExpressionAttributeNames": {
+          "#status": "status",
+          "#output": "output"
         }
       },
       "End": true

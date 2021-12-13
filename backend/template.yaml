@@ -64,9 +64,9 @@ Resources:
               - pk
               - createdAt
               - payload
-              - result
               - status
               - url
+              - output
           ProvisionedThroughput:
             ReadCapacityUnits: 1
             WriteCapacityUnits: 1
@@ -157,7 +157,27 @@ Resources:
             Stream: !GetAtt DynamodbTable.StreamArn
             StartingPosition: TRIM_HORIZON
             BatchSize: 100
-  
+            FilterCriteria:
+              Filters:
+                - Pattern: "{\"eventName\":[\"INSERT\"],\"dynamodb\":{\"NewImage\":{\"type\":{\"S\":[\"candidate\"]}}}}"
+
+  CreateWebhookCallFunction:
+    Type: AWS::Serverless::Function
+    Description: Create webhook call with status pending
+    Properties:
+      CodeUri: functions/create-webhook-call/
+      Handler: app.lambdaHandler
+      Runtime: nodejs12.x
+      Timeout: 10
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+      Environment:
+        Variables:
+          DB_TABLE: !Ref DynamodbTable
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref DynamodbTable
+
   CallWebhookFunction:
     Type: AWS::Serverless::Function
     Description: Call webhook with the resource data
@@ -213,6 +233,7 @@ Resources:
         DynamoDBTableName: !Ref DynamodbTable
         FetchResourceFunctionName: !Ref FetchResourceFunction
         SQSQueueUrl: !Ref SQSQueue
+        CreateWebhookCallFunctionName: !Ref CreateWebhookCallFunction
       Events:
         EventBridgeRule:
           Type: EventBridgeRule
@@ -227,6 +248,8 @@ Resources:
       Policies:
         - LambdaInvokePolicy:
             FunctionName: !Ref FetchResourceFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CreateWebhookCallFunction
         - SQSSendMessagePolicy:
             QueueName: !GetAtt SQSQueue.QueueName
         - DynamoDBReadPolicy:

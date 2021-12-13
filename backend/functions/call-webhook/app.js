@@ -5,28 +5,14 @@ var stepfunctions = new AWS.StepFunctions();
 
 exports.lambdaHandler = async (event, context) => {
   for (const record of event.Records) {
+    console.log(record)
     let body = JSON.parse(record.body);
     let payload = body["payload"];
-    payload["id"] = payload["pk"];
     let url = body["url"];
-    let signingToken = body["signingToken"];
-    let resourceId = payload["pk"];
-    let currentTime = new Date().toISOString();
     let taskToken = body["taskToken"];
 
-    delete payload["pk"];
-    delete payload["companyId"];
-
-    let postData = {
-      resource: payload,
-      resourceId: resourceId,
-      resourceType: payload["type"],
-      triggeredAt: currentTime,
-      token: hmacSHA256(resourceId + currentTime, signingToken).toString(),
-    };
-
     try {
-      const webhook = await axios.post(url, postData, {
+      const webhook = await axios.post(url, payload, {
         "Content-Type": "application/json",
       });
 
@@ -34,7 +20,6 @@ exports.lambdaHandler = async (event, context) => {
         taskToken: taskToken,
         output: JSON.stringify({
           status: "success",
-          payload: postData,
           output: {},
         }),
       };

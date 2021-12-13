@@ -48,7 +48,11 @@ async function fetchWebhookHistory(companyId) {
     },
     ExpressionAttributeNames: {
       "#type": "type",
+      "#status": "status",
+      "#url": "url",
+      "#output": "output"
     },
+    ProjectionExpression: "pk, companyId, createdAt, #status, payload, #url, #output",
     TableName: process.env.DB_TABLE,
   };
 

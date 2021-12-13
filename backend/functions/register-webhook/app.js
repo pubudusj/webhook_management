@@ -80,7 +80,7 @@ function validateInput(body) {
     errors.push("Required field url not found or invalid");
   }
 
-  if (isNaN(body.companyId)) {
+  if (!body.companyId || isNaN(body.companyId)) {
     errors.push("Required field companyId not found or invalid");
   }
 
@@ -97,7 +97,7 @@ function validateInput(body) {
       },
       body: JSON.stringify({
         message: "Validation errors",
-        errors: errors,
+        error: errors,
       }),
     };
   }
