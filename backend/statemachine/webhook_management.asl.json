@@ -1,8 +1,8 @@
 {
   "Comment": "State machine for webhok management service",
-  "StartAt": "GetWebhooksForCompanyAndEvent",
+  "StartAt": "Get Webhooks For Company And Event",
   "States": {
-    "GetWebhooksForCompanyAndEvent": {
+    "Get Webhooks For Company And Event": {
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:getItem",
       "Parameters": {
@@ -16,10 +16,10 @@
           }
         }
       },
-      "Next": "IfWebhookDataExists",
+      "Next": "Validate If Webhook Data Exists",
       "ResultPath": "$.webhookData"
     },
-    "IfWebhookDataExists": {
+    "Validate If Webhook Data Exists": {
       "Type": "Choice",
       "Choices": [
         {
@@ -41,12 +41,12 @@
               "IsPresent": true
             }
           ],
-          "Next": "TransformWebhookData"
+          "Next": "Transform Webhook Data"
         }
       ],
       "Default": "SkipExecution"
     },
-    "TransformWebhookData": {
+    "Transform Webhook Data": {
       "Type": "Pass",
       "Next": "Fetch Resource Data Lambda",
       "Parameters": {
@@ -80,13 +80,13 @@
           "BackoffRate": 2
         }
       ],
-      "Next": "IfEventObjectDataExists",
+      "Next": "Validate If Event Object Data Exists",
       "ResultPath": "$.taskResult",
       "ResultSelector": {
         "resourceData.$": "$.Payload"
       }
     },
-    "IfEventObjectDataExists": {
+    "Validate If Event Object Data Exists": {
       "Type": "Choice",
       "Choices": [
         {
@@ -94,26 +94,26 @@
             "Variable": "$.taskResult.resourceData",
             "IsNull": true
           },
-          "Next": "createWebhookCall"
+          "Next": "Create Webhook Call"
         }
       ],
       "Default": "Fail"
     },
-    "createWebhookCall": {
+    "Create Webhook Call": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
         "Payload.$": "$",
         "FunctionName": "${CreateWebhookCallFunctionName}"
       },
-      "Next": "SQS SendMessage",
+      "Next": "Queue Webhook Call",
       "ResultPath": "$.webhookCallData",
       "ResultSelector": {
         "id.$": "$.Payload.id",
         "payload.$": "$.Payload.payload"
       }
     },
-    "SQS SendMessage": {
+    "Queue Webhook Call": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
       "Parameters": {
@@ -137,21 +137,21 @@
           "MaxAttempts": 2
         }
       ],
-      "Next": "DynamoDB Update WebhookCall",
+      "Next": "Update WebhookCall",
       "ResultPath": "$.webhookCallResult",
       "Catch": [
         {
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "TransformError",
+          "Next": "Transform Error",
           "ResultPath": "$.webhookCallResult"
         }
       ]
     },
-    "TransformError": {
+    "Transform Error": {
       "Type": "Pass",
-      "Next": "DynamoDB Update WebhookCall",
+      "Next": "Update WebhookCall",
       "ResultPath": "$.webhookCallResult",
       "Parameters": {
         "status": "failed",
@@ -162,7 +162,7 @@
         }
       }
     },
-    "DynamoDB Update WebhookCall": {
+    "Update WebhookCall": {
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
